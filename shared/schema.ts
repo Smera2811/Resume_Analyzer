@@ -1,18 +1,22 @@
-import { sql } from "drizzle-orm";
-import { pgTable, text, varchar } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+export const analyzeRequestSchema = z.object({
+  resume: z.string().min(50, "Resume must be at least 50 characters"),
+  jobDescription: z.string().min(50, "Job description must be at least 50 characters"),
 });
 
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
+export type AnalyzeRequest = z.infer<typeof analyzeRequestSchema>;
+
+export const matchLevelSchema = z.enum(["Excellent", "Good", "Moderate", "Weak"]);
+export type MatchLevel = z.infer<typeof matchLevelSchema>;
+
+export const analysisResultSchema = z.object({
+  score: z.number().min(0).max(100),
+  level: matchLevelSchema,
+  strongMatches: z.array(z.string()),
+  gaps: z.array(z.string()),
+  transferableSkills: z.array(z.string()),
+  finalAssessment: z.string(),
 });
 
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
+export type AnalysisResult = z.infer<typeof analysisResultSchema>;
