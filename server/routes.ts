@@ -1,8 +1,13 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { createRequire } from "module";
 import multer from "multer";
 import OpenAI from "openai";
+import mammoth from "mammoth";
 import { analyzeRequestSchema, type AnalysisResult } from "@shared/schema";
+
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -28,7 +33,6 @@ const upload = multer({
 
 async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<string> {
   if (mimetype === "application/pdf") {
-    const pdfParse = (await import("pdf-parse")).default;
     const data = await pdfParse(buffer);
     return data.text.trim();
   }
@@ -37,7 +41,6 @@ async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<st
     mimetype === "application/msword" ||
     mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
-    const mammoth = await import("mammoth");
     const result = await mammoth.extractRawText({ buffer });
     return result.value.trim();
   }
