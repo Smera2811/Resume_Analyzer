@@ -16,6 +16,7 @@ const allowlist = [
   "express-rate-limit",
   "express-session",
   "jsonwebtoken",
+  "mammoth",
   "memorystore",
   "multer",
   "nanoid",
@@ -23,6 +24,7 @@ const allowlist = [
   "openai",
   "passport",
   "passport-local",
+  "pdf-parse",
   "pg",
   "stripe",
   "uuid",
@@ -52,7 +54,13 @@ async function buildAll() {
     bundle: true,
     format: "cjs",
     outfile: "dist/index.cjs",
+    // Polyfill import.meta.url for CJS output — required by createRequire and any
+    // ESM-only helpers that reference the current module's file URL.
+    banner: {
+      js: `const __importMetaUrl = require("url").pathToFileURL(__filename).href;`,
+    },
     define: {
+      "import.meta.url": "__importMetaUrl",
       "process.env.NODE_ENV": '"production"',
     },
     minify: true,
