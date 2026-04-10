@@ -23,7 +23,10 @@ export function serveStatic(app: Express) {
 
   // Fall through to index.html for any routes not handled by the API
   // This is essential for Single Page Applications (React/Wouter)
-  app.get("*", (_req, res) => {
+  // app.get("*", (_req, res) => {
+  //   res.sendFile(resolve(distPath, "index.html"));
+  // });
+  app.get("*path", (_req, res) => {
     res.sendFile(resolve(distPath, "index.html"));
   });
 }
