@@ -2,8 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { createRequire } from "module";
 import multer from "multer";
-// import OpenAI from "openai"; <--- Removed
-import { GoogleGenerativeAI } from "@google/generative-ai"; // Added Gemini
+import { GoogleGenerativeAI } from "@google/generative-ai"; 
 import mammoth from "mammoth";
 import { analyzeRequestSchema, type AnalysisResult } from "@shared/schema";
 
@@ -13,18 +12,11 @@ const pdfParse = require("pdf-parse") as (
 ) => Promise<{ text: string }>;
 
 // --- GEMINI SETUP ---
+// We force 'v1' to avoid the 'v1beta' 404 error you were seeing in the logs
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({
-  model: "gemini-pro",
-  generationConfig: { responseMimeType: "application/json" },
-});
-
-/* // OLD OPENAI CODE - COMMENTED OUT TO PREVENT CRASH
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
-*/
+  model: "gemini-1.5-flash",
+}, { apiVersion: 'v1' });
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -54,8 +46,7 @@ async function extractTextFromFile(
 
   if (
     mimetype === "application/msword" ||
-    mimetype ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
     const result = await mammoth.extractRawText({ buffer });
     return result.value.trim();
@@ -64,81 +55,68 @@ async function extractTextFromFile(
   throw new Error("Unsupported file type");
 }
 
-const SYSTEM_PROMPT = `You are an expert AI hiring assistant and senior technical recruiter with 15+ years of experience across all industries. Your role is to perform deep semantic analysis comparing a candidate's resume against a job description.
-
-You must return a JSON object with EXACTLY this structure:
+const SYSTEM_PROMPT = `You are an expert AI hiring assistant and senior technical recruiter with 15+ years of experience. Your role is to perform deep semantic analysis. 
+You must return a VALID JSON object with this structure:
 {
   "score": <integer 0-100>,
-  "level": <"Excellent" | "Good" | "Moderate" | "Weak">,
-  "strongMatches": [<array of concise bullet strings>],
-  "gaps": [<array of concise bullet strings>],
-  "transferableSkills": [<array of concise bullet strings>],
-  "finalAssessment": "<2-3 sentence objective summary>"
-}
-
-Score guidelines:
-- 85-100: Excellent
-- 70-84: Good
-- 50-69: Moderate
-- 0-49: Weak`;
+  "level": <string>,
+  "strongMatches": [<array>],
+  "gaps": [<array>],
+  "transferableSkills": [<array>],
+  "finalAssessment": <string>
+}`;
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
-  // File text extraction endpoint
+
   app.post("/api/extract-text", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
-      const text = await extractTextFromFile(
-        req.file.buffer,
-        req.file.mimetype,
-      );
+      const text = await extractTextFromFile(req.file.buffer, req.file.mimetype);
       if (!text || text.length < 10) {
-        return res
-          .status(422)
-          .json({ error: "Could not extract readable text from this file." });
+        return res.status(422).json({ error: "Could not extract readable text." });
       }
       return res.json({ text });
     } catch (error: any) {
       console.error("Text extraction error:", error);
-      return res
-        .status(500)
-        .json({ error: error.message || "Failed to extract text from file" });
+      return res.status(500).json({ error: "Failed to extract text" });
     }
   });
 
-  // Main analysis endpoint (REPLACED OPENAI WITH GEMINI)
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
       if (!parsed.success) {
-        return res.status(400).json({
-          error: "Invalid request",
-          details: parsed.error.flatten().fieldErrors,
-        });
+        return res.status(400).json({ error: "Invalid request data" });
       }
 
       const { resume, jobDescription } = parsed.data;
+      const userMessage = `Resume:\n${resume}\n\nJob Description:\n${jobDescription}\n\nAnalyze and return JSON.`;
 
-      const userMessage = `Resume:\n${resume}\n\nJob Description:\n${jobDescription}\n\nAnalyze the resume against this job description and return the JSON analysis.`;
+      // Main Gemini API Call with JSON configuration
+      const result_ai = await model.generateContent({
+        contents: [
+          { role: "user", parts: [{ text: SYSTEM_PROMPT + "\n\n" + userMessage }] }
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+        },
+      });
 
-      // Gemini API Call
-      const result_ai = await model.generateContent([
-        { text: SYSTEM_PROMPT },
-        { text: userMessage },
-      ]);
-
-      const content = result_ai.response.text();
+      const response = await result_ai.response;
+      const content = response.text();
 
       if (!content) {
-        return res.status(500).json({ error: "No response from AI" });
+        throw new Error("Empty response from Gemini");
       }
 
       const result: AnalysisResult = JSON.parse(content);
 
+      // Auto-calculate level based on score
       if (result.score >= 85) result.level = "Excellent";
       else if (result.score >= 70) result.level = "Good";
       else if (result.score >= 50) result.level = "Moderate";
@@ -146,9 +124,11 @@ export async function registerRoutes(
 
       return res.json(result);
     } catch (error: any) {
-      console.error("Analysis error:", error);
+      // Improved error logging for Render
+      console.error("Analysis error detailed:", error.message || error);
       return res.status(500).json({
         error: "Failed to analyze resume. Check your Gemini API Key.",
+        details: error.message
       });
     }
   });
