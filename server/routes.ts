@@ -16,9 +16,9 @@ const pdfParse = require("pdf-parse") as (
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel(
   {
-    model: "gemini-pro",
+    model: "gemini-1.5-flash",
   },
-  { apiVersion: "v1beta" },
+  { apiVersion: "v1" },
 );
 
 const upload = multer({
@@ -118,7 +118,8 @@ export async function registerRoutes(
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
-      if (!parsed.success) return res.status(400).json({ error: "Invalid data" });
+      if (!parsed.success)
+        return res.status(400).json({ error: "Invalid data" });
 
       const { resume, jobDescription } = parsed.data;
 
@@ -131,14 +132,19 @@ export async function registerRoutes(
       `;
 
       // We use a simple string prompt for maximum compatibility
-      const result_ai = await model.generateContent(SYSTEM_PROMPT + "\n\n" + userMessage);
+      const result_ai = await model.generateContent(
+        SYSTEM_PROMPT + "\n\n" + userMessage,
+      );
       const response = await result_ai.response;
       let text = response.text();
 
       if (!text) throw new Error("Empty response from Gemini");
 
       // Clean up markdown in case the AI adds it
-      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+      text = text
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
 
       const result: AnalysisResult = JSON.parse(text);
 
@@ -151,9 +157,9 @@ export async function registerRoutes(
       return res.json(result);
     } catch (error: any) {
       console.error("STABLE MODEL ERROR:", error.message);
-      return res.status(500).json({ 
-        error: "Analysis failed", 
-        details: error.message 
+      return res.status(500).json({
+        error: "Analysis failed",
+        details: error.message,
       });
     }
   });
