@@ -18,7 +18,7 @@ const model = genAI.getGenerativeModel(
   {
     model: "gemini-1.5-flash",
   },
-  { apiVersion: "v1" },
+  { apiVersion: "v1beta" },
 );
 
 const upload = multer({
@@ -78,6 +78,43 @@ export async function registerRoutes(
     }
   });
 
+  // app.post("/api/analyze", async (req, res) => {
+  //   try {
+  //     const parsed = analyzeRequestSchema.safeParse(req.body);
+  //     if (!parsed.success)
+  //       return res.status(400).json({ error: "Invalid data" });
+
+  //     const { resume, jobDescription } = parsed.data;
+  //     const finalPrompt = `${SYSTEM_PROMPT}\n\nResume: ${resume}\n\nJD: ${jobDescription}\n\nReturn JSON only.`;
+
+  //     // We removed generationConfig here to fix the "Unknown name responseMimeType" error
+  //     const result_ai = await model.generateContent(finalPrompt);
+  //     const response = await result_ai.response;
+  //     let text = response.text();
+
+  //     // CLEANUP: Removes markdown backticks if Gemini adds them
+  //     text = text
+  //       .replace(/```json/g, "")
+  //       .replace(/```/g, "")
+  //       .trim();
+
+  //     const result: AnalysisResult = JSON.parse(text);
+
+  //     // Final scoring logic
+  //     if (result.score >= 85) result.level = "Excellent";
+  //     else if (result.score >= 70) result.level = "Good";
+  //     else if (result.score >= 50) result.level = "Moderate";
+  //     else result.level = "Weak";
+
+  //     return res.json(result);
+  //   } catch (error: any) {
+  //     console.error("Analysis Crash:", error.message);
+  //     return res.status(500).json({
+  //       error: "Analysis failed",
+  //       details: error.message,
+  //     });
+  //   }
+  // });
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
@@ -85,14 +122,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid data" });
 
       const { resume, jobDescription } = parsed.data;
-      const finalPrompt = `${SYSTEM_PROMPT}\n\nResume: ${resume}\n\nJD: ${jobDescription}\n\nReturn JSON only.`;
 
-      // We removed generationConfig here to fix the "Unknown name responseMimeType" error
+      // We put the JSON instructions directly in the prompt
+      const finalPrompt = `${SYSTEM_PROMPT}\n\nResume: ${resume}\n\nJD: ${jobDescription}\n\nReturn ONLY raw JSON.`;
+
+      // CRITICAL: No second argument (generationConfig) here to avoid the 400 error
       const result_ai = await model.generateContent(finalPrompt);
       const response = await result_ai.response;
       let text = response.text();
 
-      // CLEANUP: Removes markdown backticks if Gemini adds them
+      // Clean up markdown if the AI includes it
       text = text
         .replace(/```json/g, "")
         .replace(/```/g, "")
@@ -100,7 +139,6 @@ export async function registerRoutes(
 
       const result: AnalysisResult = JSON.parse(text);
 
-      // Final scoring logic
       if (result.score >= 85) result.level = "Excellent";
       else if (result.score >= 70) result.level = "Good";
       else if (result.score >= 50) result.level = "Moderate";
@@ -108,11 +146,10 @@ export async function registerRoutes(
 
       return res.json(result);
     } catch (error: any) {
-      console.error("Analysis Crash:", error.message);
-      return res.status(500).json({
-        error: "Analysis failed",
-        details: error.message,
-      });
+      console.error("FINAL ATTEMPT ERROR:", error.message);
+      return res
+        .status(500)
+        .json({ error: "Analysis failed", details: error.message });
     }
   });
 
