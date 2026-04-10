@@ -15,7 +15,7 @@ const pdfParse = require("pdf-parse") as (
 // --- GEMINI SETUP ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel({
-  model: "gemini-1.5-flash",
+  model: "gemini-1.5-flash-latest",
   generationConfig: { responseMimeType: "application/json" },
 });
 
@@ -147,11 +147,9 @@ export async function registerRoutes(
       return res.json(result);
     } catch (error: any) {
       console.error("Analysis error:", error);
-      return res
-        .status(500)
-        .json({
-          error: "Failed to analyze resume. Check your Gemini API Key.",
-        });
+      return res.status(500).json({
+        error: "Failed to analyze resume. Check your Gemini API Key.",
+      });
     }
   });
 
