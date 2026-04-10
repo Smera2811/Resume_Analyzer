@@ -2,17 +2,29 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { createRequire } from "module";
 import multer from "multer";
-import OpenAI from "openai";
+// import OpenAI from "openai"; <--- Removed
+import { GoogleGenerativeAI } from "@google/generative-ai"; // Added Gemini
 import mammoth from "mammoth";
 import { analyzeRequestSchema, type AnalysisResult } from "@shared/schema";
 
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string }>;
+const pdfParse = require("pdf-parse") as (
+  buffer: Buffer,
+) => Promise<{ text: string }>;
 
+// --- GEMINI SETUP ---
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const model = genAI.getGenerativeModel({
+  model: "gemini-1.5-flash",
+  generationConfig: { responseMimeType: "application/json" },
+});
+
+/* // OLD OPENAI CODE - COMMENTED OUT TO PREVENT CRASH
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
+*/
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -31,7 +43,10 @@ const upload = multer({
   },
 });
 
-async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<string> {
+async function extractTextFromFile(
+  buffer: Buffer,
+  mimetype: string,
+): Promise<string> {
   if (mimetype === "application/pdf") {
     const data = await pdfParse(buffer);
     return data.text.trim();
@@ -39,7 +54,8 @@ async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<st
 
   if (
     mimetype === "application/msword" ||
-    mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    mimetype ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
     const result = await mammoth.extractRawText({ buffer });
     return result.value.trim();
@@ -49,8 +65,6 @@ async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<st
 }
 
 const SYSTEM_PROMPT = `You are an expert AI hiring assistant and senior technical recruiter with 15+ years of experience across all industries. Your role is to perform deep semantic analysis comparing a candidate's resume against a job description.
-
-You do NOT rely on keyword matching. Instead, you evaluate conceptual alignment, skill transferability, seniority level fit, domain expertise, and overall career trajectory.
 
 You must return a JSON object with EXACTLY this structure:
 {
@@ -63,42 +77,40 @@ You must return a JSON object with EXACTLY this structure:
 }
 
 Score guidelines:
-- 85-100: Excellent — candidate is exceptionally well-aligned; minor or no gaps
-- 70-84: Good — strong fit with some addressable gaps
-- 50-69: Moderate — meaningful overlap but notable gaps present
-- 0-49: Weak — significant misalignment in skills, experience, or domain
-
-Rules:
-- strongMatches: 3-6 items. Specific evidence from the resume that directly addresses job requirements.
-- gaps: 3-6 items. Concrete missing skills, experience, or qualifications. Be direct and specific.
-- transferableSkills: 2-5 items. Skills from the resume that weren't explicitly required but add value.
-- finalAssessment: Objective, recruiter-style summary. Evidence-based, no filler phrases.
-- All bullet items should be concise (under 15 words each), specific, and evidence-grounded.
-- Tone: professional, objective, direct. No hedging language.`;
+- 85-100: Excellent
+- 70-84: Good
+- 50-69: Moderate
+- 0-49: Weak`;
 
 export async function registerRoutes(
   httpServer: Server,
-  app: Express
+  app: Express,
 ): Promise<Server> {
-
   // File text extraction endpoint
   app.post("/api/extract-text", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
-      const text = await extractTextFromFile(req.file.buffer, req.file.mimetype);
+      const text = await extractTextFromFile(
+        req.file.buffer,
+        req.file.mimetype,
+      );
       if (!text || text.length < 10) {
-        return res.status(422).json({ error: "Could not extract readable text from this file. Make sure it is not scanned/image-based." });
+        return res
+          .status(422)
+          .json({ error: "Could not extract readable text from this file." });
       }
       return res.json({ text });
     } catch (error: any) {
       console.error("Text extraction error:", error);
-      return res.status(500).json({ error: error.message || "Failed to extract text from file" });
+      return res
+        .status(500)
+        .json({ error: error.message || "Failed to extract text from file" });
     }
   });
 
-  // Main analysis endpoint
+  // Main analysis endpoint (REPLACED OPENAI WITH GEMINI)
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
@@ -111,27 +123,16 @@ export async function registerRoutes(
 
       const { resume, jobDescription } = parsed.data;
 
-      const userMessage = `Resume:
-${resume}
+      const userMessage = `Resume:\n${resume}\n\nJob Description:\n${jobDescription}\n\nAnalyze the resume against this job description and return the JSON analysis.`;
 
----
+      // Gemini API Call
+      const result_ai = await model.generateContent([
+        { text: SYSTEM_PROMPT },
+        { text: userMessage },
+      ]);
 
-Job Description:
-${jobDescription}
+      const content = result_ai.response.text();
 
-Analyze the resume against this job description and return the JSON analysis.`;
-
-      const response = await openai.chat.completions.create({
-        model: "gpt-5.2",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage },
-        ],
-        response_format: { type: "json_object" },
-        max_completion_tokens: 8192,
-      });
-
-      const content = response.choices[0]?.message?.content;
       if (!content) {
         return res.status(500).json({ error: "No response from AI" });
       }
@@ -146,7 +147,11 @@ Analyze the resume against this job description and return the JSON analysis.`;
       return res.json(result);
     } catch (error: any) {
       console.error("Analysis error:", error);
-      return res.status(500).json({ error: "Failed to analyze resume" });
+      return res
+        .status(500)
+        .json({
+          error: "Failed to analyze resume. Check your Gemini API Key.",
+        });
     }
   });
 
