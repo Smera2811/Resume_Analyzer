@@ -10,7 +10,7 @@ const __dirname = dirname(__filename);
 
 export function serveStatic(app: Express) {
   // On Render, the build folder is usually one level up from the server folder
-  const distPath = resolve(__dirname, "..", "public");
+  const distPath = resolve(__dirname, "..", "dist");
 
   if (!fs.existsSync(distPath)) {
     throw new Error(
