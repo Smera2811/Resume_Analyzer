@@ -16,7 +16,7 @@ const pdfParse = require("pdf-parse") as (
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel(
   {
-    model: "gemini-1.5-flash",
+    model: "gemini-pro",
   },
   { apiVersion: "v1beta" },
 );
@@ -118,27 +118,31 @@ export async function registerRoutes(
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
-      if (!parsed.success)
-        return res.status(400).json({ error: "Invalid data" });
+      if (!parsed.success) return res.status(400).json({ error: "Invalid data" });
 
       const { resume, jobDescription } = parsed.data;
 
-      // We put the JSON instructions directly in the prompt
-      const finalPrompt = `${SYSTEM_PROMPT}\n\nResume: ${resume}\n\nJD: ${jobDescription}\n\nReturn ONLY raw JSON.`;
+      const userMessage = `
+        Resume Content: ${resume}
+        Job Description: ${jobDescription}
 
-      // CRITICAL: No second argument (generationConfig) here to avoid the 400 error
-      const result_ai = await model.generateContent(finalPrompt);
+        Task: Analyze this resume against the job description.
+        Return ONLY a raw JSON object. Do not include markdown formatting or backticks.
+      `;
+
+      // We use a simple string prompt for maximum compatibility
+      const result_ai = await model.generateContent(SYSTEM_PROMPT + "\n\n" + userMessage);
       const response = await result_ai.response;
       let text = response.text();
 
-      // Clean up markdown if the AI includes it
-      text = text
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
-        .trim();
+      if (!text) throw new Error("Empty response from Gemini");
+
+      // Clean up markdown in case the AI adds it
+      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
       const result: AnalysisResult = JSON.parse(text);
 
+      // Scoring levels
       if (result.score >= 85) result.level = "Excellent";
       else if (result.score >= 70) result.level = "Good";
       else if (result.score >= 50) result.level = "Moderate";
@@ -146,10 +150,11 @@ export async function registerRoutes(
 
       return res.json(result);
     } catch (error: any) {
-      console.error("FINAL ATTEMPT ERROR:", error.message);
-      return res
-        .status(500)
-        .json({ error: "Analysis failed", details: error.message });
+      console.error("STABLE MODEL ERROR:", error.message);
+      return res.status(500).json({ 
+        error: "Analysis failed", 
+        details: error.message 
+      });
     }
   });
 
