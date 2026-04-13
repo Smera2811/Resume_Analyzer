@@ -12,7 +12,7 @@ const pdfParse = require("pdf-parse") as (
 ) => Promise<{ text: string }>;
 
 // --- GEMINI SETUP ---
-// We use 'v1' to ensure we are on the stable production endpoint
+// Using gemini-3.1-flash-lite-preview for the best current performance/availability balance
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel(
   {
@@ -65,6 +65,7 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  // File text extraction endpoint
   app.post("/api/extract-text", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file" });
@@ -74,52 +75,18 @@ export async function registerRoutes(
       );
       return res.json({ text });
     } catch (error: any) {
+      console.error("Extraction error:", error.message);
       res.status(500).json({ error: "Text extraction failed" });
     }
   });
 
-  // app.post("/api/analyze", async (req, res) => {
-  //   try {
-  //     const parsed = analyzeRequestSchema.safeParse(req.body);
-  //     if (!parsed.success)
-  //       return res.status(400).json({ error: "Invalid data" });
-
-  //     const { resume, jobDescription } = parsed.data;
-  //     const finalPrompt = `${SYSTEM_PROMPT}\n\nResume: ${resume}\n\nJD: ${jobDescription}\n\nReturn JSON only.`;
-
-  //     // We removed generationConfig here to fix the "Unknown name responseMimeType" error
-  //     const result_ai = await model.generateContent(finalPrompt);
-  //     const response = await result_ai.response;
-  //     let text = response.text();
-
-  //     // CLEANUP: Removes markdown backticks if Gemini adds them
-  //     text = text
-  //       .replace(/```json/g, "")
-  //       .replace(/```/g, "")
-  //       .trim();
-
-  //     const result: AnalysisResult = JSON.parse(text);
-
-  //     // Final scoring logic
-  //     if (result.score >= 85) result.level = "Excellent";
-  //     else if (result.score >= 70) result.level = "Good";
-  //     else if (result.score >= 50) result.level = "Moderate";
-  //     else result.level = "Weak";
-
-  //     return res.json(result);
-  //   } catch (error: any) {
-  //     console.error("Analysis Crash:", error.message);
-  //     return res.status(500).json({
-  //       error: "Analysis failed",
-  //       details: error.message,
-  //     });
-  //   }
-  // });
+  // Main analysis endpoint with Retry Logic
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
-      if (!parsed.success)
-        return res.status(400).json({ error: "Invalid data" });
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid data", details: parsed.error.flatten() });
+      }
 
       const { resume, jobDescription } = parsed.data;
 
@@ -131,24 +98,49 @@ export async function registerRoutes(
         Return ONLY a raw JSON object. Do not include markdown formatting or backticks.
       `;
 
-      // We use a simple string prompt for maximum compatibility
-      const result_ai = await model.generateContent(
-        SYSTEM_PROMPT + "\n\n" + userMessage,
-      );
-      const response = await result_ai.response;
-      let text = response.text();
+      let attempts = 0;
+      const maxAttempts = 3;
+      let text = "";
+      let lastError = null;
 
-      if (!text) throw new Error("Empty response from Gemini");
+      // --- RETRY LOOP START ---
+      while (attempts < maxAttempts) {
+        try {
+          const result_ai = await model.generateContent(
+            SYSTEM_PROMPT + "\n\n" + userMessage,
+          );
+          const response = await result_ai.response;
+          text = response.text();
+
+          if (text) break; // Success! Break out of loop.
+        } catch (error: any) {
+          lastError = error;
+          // Check if it's a 503 (Overloaded) error to trigger a retry
+          if (error.message.includes("503") || error.message.includes("high demand") || error.message.includes("Service Unavailable")) {
+            attempts++;
+            console.warn(`Gemini busy (Attempt ${attempts}/${maxAttempts}). Retrying in 2 seconds...`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } else {
+            // For 400, 401, 404, or 403, we don't retry as the error is permanent
+            throw error;
+          }
+        }
+      }
+      // --- RETRY LOOP END ---
+
+      if (!text) {
+        throw new Error(`Failed after ${maxAttempts} attempts. Error: ${lastError?.message}`);
+      }
 
       // Clean up markdown in case the AI adds it
-      text = text
+      const cleanJson = text
         .replace(/```json/g, "")
         .replace(/```/g, "")
         .trim();
 
-      const result: AnalysisResult = JSON.parse(text);
+      const result: AnalysisResult = JSON.parse(cleanJson);
 
-      // Scoring levels
+      // Scoring levels normalization
       if (result.score >= 85) result.level = "Excellent";
       else if (result.score >= 70) result.level = "Good";
       else if (result.score >= 50) result.level = "Moderate";
@@ -156,7 +148,7 @@ export async function registerRoutes(
 
       return res.json(result);
     } catch (error: any) {
-      console.error("STABLE MODEL ERROR:", error.message);
+      console.error("ANALYSIS ERROR:", error.message);
       return res.status(500).json({
         error: "Analysis failed",
         details: error.message,
