@@ -12,18 +12,17 @@ const pdfParse = require("pdf-parse") as (
 ) => Promise<{ text: string }>;
 
 // --- GEMINI SETUP ---
-// Using gemini-3.1-flash-lite-preview for the best current performance/availability balance
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const model = genAI.getGenerativeModel(
   {
-    model: "gemini-2.0-flash",
+    model: "gemini-2.0-flash", // Stable workhorse for 2026
   },
   { apiVersion: "v1" },
 );
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = [
       "application/pdf",
@@ -35,10 +34,7 @@ const upload = multer({
   },
 });
 
-async function extractTextFromFile(
-  buffer: Buffer,
-  mimetype: string,
-): Promise<string> {
+async function extractTextFromFile(buffer: Buffer, mimetype: string): Promise<string> {
   if (mimetype === "application/pdf") {
     const data = await pdfParse(buffer);
     return data.text.trim();
@@ -61,86 +57,49 @@ Return ONLY a JSON object with this EXACT structure:
   "finalAssessment": "2-3 sentences"
 }`;
 
-export async function registerRoutes(
-  httpServer: Server,
-  app: Express,
-): Promise<Server> {
-  // File text extraction endpoint
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.post("/api/extract-text", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file" });
-      const text = await extractTextFromFile(
-        req.file.buffer,
-        req.file.mimetype,
-      );
+      const text = await extractTextFromFile(req.file.buffer, req.file.mimetype);
       return res.json({ text });
     } catch (error: any) {
-      console.error("Extraction error:", error.message);
       res.status(500).json({ error: "Text extraction failed" });
     }
   });
 
-  // Main analysis endpoint with Retry Logic
   app.post("/api/analyze", async (req, res) => {
     try {
       const parsed = analyzeRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ error: "Invalid data", details: parsed.error.flatten() });
-      }
+      if (!parsed.success) return res.status(400).json({ error: "Invalid data" });
 
       const { resume, jobDescription } = parsed.data;
-
-      const userMessage = `
-        Resume Content: ${resume}
-        Job Description: ${jobDescription}
-
-        Task: Analyze this resume against the job description.
-        Return ONLY a raw JSON object. Do not include markdown formatting or backticks.
-      `;
+      const userMessage = `Resume: ${resume}\n\nJD: ${jobDescription}\n\nAnalyze and return raw JSON.`;
 
       let attempts = 0;
       const maxAttempts = 3;
       let text = "";
-      let lastError = null;
 
-      // --- RETRY LOOP START ---
+      // --- RETRY LOOP ---
       while (attempts < maxAttempts) {
         try {
-          const result_ai = await model.generateContent(
-            SYSTEM_PROMPT + "\n\n" + userMessage,
-          );
+          const result_ai = await model.generateContent(SYSTEM_PROMPT + "\n\n" + userMessage);
           const response = await result_ai.response;
           text = response.text();
-
-          if (text) break; // Success! Break out of loop.
+          if (text) break;
         } catch (error: any) {
-          lastError = error;
-          // Check if it's a 503 (Overloaded) error to trigger a retry
-          if (error.message.includes("503") || error.message.includes("high demand") || error.message.includes("Service Unavailable")) {
+          if (error.message.includes("503") || error.message.includes("demand")) {
             attempts++;
-            console.warn(`Gemini busy (Attempt ${attempts}/${maxAttempts}). Retrying in 2 seconds...`);
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise(r => setTimeout(r, 2000));
           } else {
-            // For 400, 401, 404, or 403, we don't retry as the error is permanent
             throw error;
           }
         }
       }
-      // --- RETRY LOOP END ---
 
-      if (!text) {
-        throw new Error(`Failed after ${maxAttempts} attempts. Error: ${lastError?.message}`);
-      }
-
-      // Clean up markdown in case the AI adds it
-      const cleanJson = text
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
-        .trim();
-
+      const cleanJson = text.replace(/```json/g, "").replace(/```/g, "").trim();
       const result: AnalysisResult = JSON.parse(cleanJson);
 
-      // Scoring levels normalization
       if (result.score >= 85) result.level = "Excellent";
       else if (result.score >= 70) result.level = "Good";
       else if (result.score >= 50) result.level = "Moderate";
@@ -149,10 +108,7 @@ export async function registerRoutes(
       return res.json(result);
     } catch (error: any) {
       console.error("ANALYSIS ERROR:", error.message);
-      return res.status(500).json({
-        error: "Analysis failed",
-        details: error.message,
-      });
+      return res.status(500).json({ error: "Analysis failed", details: error.message });
     }
   });
 
